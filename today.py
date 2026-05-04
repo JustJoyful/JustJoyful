@@ -37,32 +37,53 @@ def calc_uptime():
     return f"{d.years}y {d.months}m {d.days}d  (since {DOB.strftime('%d %b %Y')})"
 
 # ── GitHub data ───────────────────────────────────────────────────────────
-def fetch_stats():
+def fetch_github_data():
     q = """query($l:String!){user(login:$l){
-      repositories(ownerAffiliations:OWNER,isFork:false){totalCount}
-      contributionsCollection{totalCommitContributions
-        totalPullRequestContributions totalIssueContributions}
-      followers{totalCount}}}"""
+      repositories(ownerAffiliations:OWNER,isFork:false,first:100,orderBy:{field:PUSHED_AT,direction:DESC}){
+        totalCount
+        nodes{
+          name description url primaryLanguage{name}
+          defaultBranchRef{target{...on Commit{history{totalCount}}}}
+          languages(first:10){edges{size}}
+        }
+      }
+    }}"""
     try:
-        u = gql(q, {"l": GH_USER})["data"]["user"]
-        cc = u["contributionsCollection"]
-        return {"repos": u["repositories"]["totalCount"],
-                "commits": cc["totalCommitContributions"],
-                "prs":     cc["totalPullRequestContributions"],
-                "issues":  cc["totalIssueContributions"]}
+        data = gql(q, {"l": GH_USER})["data"]["user"]
+        repos = data["repositories"]["nodes"]
+        
+        commits = 0
+        bytes_of_code = 0
+        
+        for r in repos:
+            ref = r.get("defaultBranchRef")
+            if ref and ref.get("target"):
+                commits += ref["target"].get("history", {}).get("totalCount", 0)
+            for edge in r.get("languages", {}).get("edges", []):
+                bytes_of_code += edge.get("size", 0)
+                
+        # Estimate LOC (approx 30 bytes per line of code)
+        loc = bytes_of_code // 30
+        
+        active = []
+        for r in repos[:5]:
+            lang = r.get("primaryLanguage")
+            active.append({
+                "name": r.get("name", ""),
+                "desc": (r.get("description") or "")[:40],
+                "lang": lang.get("name", "") if lang else "",
+                "url": r.get("url", "")
+            })
+            
+        return {
+            "repos": data["repositories"]["totalCount"],
+            "commits": commits,
+            "loc": loc,
+            "active": active
+        }
     except Exception as e:
-        print(f"[WARN] stats: {e}", file=sys.stderr)
-        return {"repos":"?","commits":"?","prs":"?","issues":"?"}
-
-def fetch_pinned():
-    q = """query($l:String!){user(login:$l){pinnedItems(first:6,types:REPOSITORY){
-      nodes{...on Repository{name description primaryLanguage{name}}}}}}"""
-    try:
-        nodes = gql(q, {"l": GH_USER})["data"]["user"]["pinnedItems"]["nodes"]
-        return nodes
-    except Exception as e:
-        print(f"[WARN] pinned: {e}", file=sys.stderr)
-        return []
+        print(f"[WARN] github data: {e}", file=sys.stderr)
+        return {"repos":"?","commits":"?","loc":"?","active":[]}
 
 def fetch_weeks():
     q = """query($l:String!){user(login:$l){contributionsCollection{
@@ -107,7 +128,7 @@ def clvl(n):
     if n<=10:return 3
     return 4
 
-def build_svg(art, stats, pinned, weeks, uptime):
+def build_svg(art, gh_data, weeks, uptime):
     out = []
     W   = 900   # total SVG width
     PAD = 18
@@ -225,7 +246,13 @@ def build_svg(art, stats, pinned, weeks, uptime):
     kv("Uptime ", uptime, C_ACNT)
     kv("Kernel ", "CSE Student @ NSEC  ·  2025–29")
     kv("IDE    ", "VSCode  │  Vim")
+    kv("Theme  ", "Catppuccin Mocha")
     kv("Hobbies", "Gaming · Projects · Hardware · Electronics")
+
+    sec("Languages")
+    kv("Programming ", "Python · C · C++")
+    kv("Markup/Data ", "HTML · CSS · JSON · YAML")
+    kv("Spoken      ", "English · Hindi · Bengali")
 
     sec("Contact")
     linkrow("Email.Personal", PERSONAL_EMAIL,  PERSONAL_EMAIL)
@@ -234,15 +261,15 @@ def build_svg(art, stats, pinned, weeks, uptime):
     linkrow("GitHub        ", GITHUB_SHORT,    GITHUB_SHORT)
 
     sec("GitHub Stats")
-    kv("Repos  ", str(stats.get("repos","?")))
-    kv("Commits", str(stats.get("commits","?")) + "  (this year)")
-    kv("PRs    ", str(stats.get("prs","?")))
-    kv("Issues ", str(stats.get("issues","?")))
+    kv("Repos  ", f"{gh_data.get('repos', '?'):,}" if isinstance(gh_data.get('repos'), int) else str(gh_data.get('repos', '?')))
+    kv("Commits", f"{gh_data.get('commits', '?'):,}  (all time)" if isinstance(gh_data.get('commits'), int) else "?  (all time)")
+    kv("Lines  ", f"{gh_data.get('loc', '?'):,}  (est.)" if isinstance(gh_data.get('loc'), int) else "?  (est.)")
 
-    if pinned:
+    active = gh_data.get("active", [])
+    if active:
         sec("Active Projects")
-        for p in pinned[:5]:
-            lang = f"[{p['primaryLanguage']['name']}]" if p.get("primaryLanguage") else ""
+        for p in active:
+            lang = f"[{p['lang']}]" if p.get('lang') else ""
             name = p.get("name","")
             out.append(
                 f'<text x="{IX}" y="{iy}" font-family="\'Courier New\',monospace" '
@@ -345,11 +372,10 @@ README_TMPL = """\
 # ── Main ──────────────────────────────────────────────────────────────────
 def main():
     print("🟢  Fetching GitHub data …")
-    stats  = fetch_stats()
-    pinned = fetch_pinned()
-    weeks  = fetch_weeks()
-    uptime = calc_uptime()
-    print(f"   stats={stats}  pinned={len(pinned)}  weeks={len(weeks)}")
+    gh_data = fetch_github_data()
+    weeks   = fetch_weeks()
+    uptime  = calc_uptime()
+    print(f"   repos={gh_data.get('repos')}  commits={gh_data.get('commits')}  loc={gh_data.get('loc')}")
     print(f"   uptime={uptime}")
 
     print("🖼️  Loading ASCII art …")
@@ -357,7 +383,7 @@ def main():
     print(f"   {len(art)} lines")
 
     print("🎨  Building SVG …")
-    svg = build_svg(art, stats, pinned, weeks, uptime)
+    svg = build_svg(art, gh_data, weeks, uptime)
 
     with open(SVG_FILE, "w", encoding="utf-8") as f:
         f.write(svg)
