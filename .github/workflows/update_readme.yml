@@ -1,41 +1,29 @@
-name: Update README
+name: Update profile graphics
 
 on:
   schedule:
     - cron: "0 0 * * *"
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 permissions:
   contents: write
 
 jobs:
-  update-readme:
+  update:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run today.py
+      - run: pip install -r requirements.txt
+      - run: python scripts/make_graphics.py
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: python today.py
-
-      - name: Commit and push if changed
+      - name: Commit if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md profile.svg
+          git add *.svg
           git diff --staged --quiet || git commit -m "chore: update profile stats [skip ci]"
           git push
